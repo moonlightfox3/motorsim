@@ -1,0 +1,308 @@
+<!doctype html>
+<title>Motor Simulator</title>
+<style>
+    * {
+        outline: none;
+        user-select: none;
+    }
+    html {
+        height: 100%;
+    }
+    body, ::selection {
+        background-color: black;
+        color: lightgray;
+    }
+
+    canvas {
+        width: 300px;
+        height: 300px;
+        border: 1px solid lightgray;
+    }
+    div#uiEl {
+        width: 290px;
+        border: 1px solid lightgray;
+        padding: 5px;
+    }
+
+    button, input, select {
+        background-color: lightgray;
+        border-radius: 5px;
+    }
+    button:not([disabled]), select, label {
+        cursor: pointer;
+    }
+    input[type=number], input[type=text] {
+        width: 100px;
+    }
+    hr {
+        border-color: lightgray;
+    }
+</style>
+
+<canvas id="canvas"></canvas>
+<div id="uiEl">
+    <label for="fpsEl">Target FPS: </label><input type="number" id="fpsEl" placeholder="50" value="50">
+    <label for="lagEl">Lag: </label><input type="checkbox" id="lagEl">
+    <br>
+    <label for="motorEl">Motor: </label><select id="motorEl"></select>
+    <button id="reloadBtn">Reload</button>
+    <hr>
+    <div id="settingsEl"></div>
+</div>
+
+<script defer src="./param.js"></script>
+<script>
+    let ctx = null
+    onload = function () {
+        resetUI()
+
+        canvas.width = parseFloat(getComputedStyle(canvas).width)
+        canvas.height = parseFloat(getComputedStyle(canvas).height)
+        ctx = canvas.getContext("2d")
+
+        ctx.lineWidth = 2
+        ctx.fillStyle = ctx.strokeStyle = "lightgray"
+        ctx.font = "15px Arial"
+
+        init()
+        setupMotors()
+        requestAnimationFrame(() => tick())
+    }
+    function resetUI () {
+        fpsEl.value = "50"
+    }
+
+    deg2rad = deg => deg * Math.PI / 180 // deg -> rad
+    rad2deg = rad => rad * 180 / Math.PI // rad -> deg
+    r2rad = r => r * Math.PI * 2 // r -> rad
+    rad2r = rad => rad / Math.PI / 2 // rad -> r
+    rpm2radps = rpm => r2rad(rpm) / 60 // rev/m -> rad/s
+    radps2rpm = radps => rad2r(radps) * 60 // rad/s -> rev/m
+
+    let targetFps = 50 // frame/s
+    let pos = null // rad
+    let absPos = null // rad
+    let speed = null // rad/s
+    let target = null // rad
+    let radius = null // px
+    let lastFrameTime = null // ms
+    let lastDeltaTime = null // ms
+    let lastFps = null // frame/s
+    let frameCounter = null // frame
+    function init () {
+        pos = 0
+        absPos = 0
+        speed = 0
+        target = 0
+        radius = (Math.min(canvas.width, canvas.height) / 2) - 50
+        lastFrameTime = performance.now()
+        lastDeltaTime = 0
+        lastFps = 0
+        frameCounter = 0
+    }
+    function tick () {
+        let frameTime = performance.now()
+        if (frameTime - lastFrameTime < (1000 / targetFps) - 10 || lagEl.checked) {
+            requestAnimationFrame(() => tick())
+            return
+        }
+        while (frameTime - lastFrameTime < 1000 / targetFps) frameTime = performance.now()
+        lastDeltaTime = frameTime - lastFrameTime
+        lastFrameTime = frameTime
+        lastFps = 1000 / lastDeltaTime
+        let roundFps = lastFps.toFixed(2)
+        let roundTargetFps = targetFps.toFixed(2)
+
+        target = getTarget(pos, absPos, speed, lastDeltaTime / 1000)
+        speed = getSpeed(pos, absPos, speed, lastDeltaTime / 1000) ?? speed
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height)
+        ctx.beginPath()
+        ctx.fillText(`${roundFps}/${roundTargetFps} FPS`, 5, 20)
+        ctx.fillText(`"${loadedMotor}"`, 5, 40)
+        ctx.fill()
+
+        ctx.beginPath()
+        ctx.arc(canvas.width / 2, canvas.height / 2, radius, 0, deg2rad(360))
+        ctx.stroke()
+
+        ctx.translate(canvas.width / 2, canvas.height / 2)
+        if (target != null) {
+            ctx.rotate(target)
+            ctx.translate(-5, -radius - 5)
+            
+            ctx.beginPath()
+            ctx.arc(5, 5, 10, 0, deg2rad(360))
+            ctx.stroke()
+
+            ctx.translate(5, radius + 5)
+            ctx.rotate(-target)
+        }
+        ctx.rotate(pos)
+        ctx.translate(-5, -radius - 5)
+
+        ctx.beginPath()
+        ctx.moveTo(5, 5)
+        ctx.lineTo(5, radius + 5)
+        ctx.stroke()
+        
+        ctx.beginPath()
+        ctx.arc(5, 5, 10, 0, deg2rad(360))
+        ctx.fill()
+
+        ctx.translate(5, radius + 5)
+        ctx.rotate(-pos)
+        ctx.translate(-canvas.width / 2, -canvas.height / 2)
+
+        let roundPos = absPos.toFixed(2)
+        let roundSpeed = speed.toFixed(2)
+        ctx.beginPath()
+        ctx.fillText(`${roundPos} rad / ${rad2deg(absPos).toFixed(2)} deg / ${rad2r(absPos).toFixed(2)} r`, 5, canvas.height - 25)
+        ctx.fillText(`${roundSpeed} rad/s / ${rad2deg(speed).toFixed(2)} deg/s / ${radps2rpm(speed).toFixed(2)} rpm`, 5, canvas.height - 5)
+        ctx.fill()
+
+        updateMotors()
+        let vel = speed * lastDeltaTime / 1000
+        pos += vel
+        absPos = pos % (Math.PI * 2)
+        if (absPos < 0) absPos += Math.PI * 2
+        frameCounter++
+        
+        requestAnimationFrame(() => tick())
+    }
+    fpsEl.onchange = () => targetFps = +fpsEl.value
+    fpsEl.onkeydown = function (ev) {
+        if (ev.key == "Enter") fpsEl.blur()
+    }
+
+    let loadedMotor = "None"
+    function listMotors () {
+        if (typeof param == "undefined") return null
+        return Object.keys(param)
+    }
+    function loadMotor (name) {
+        let motors = listMotors()
+        if (motors != null && motors.includes(name)) {
+            settingsEl.innerHTML = ""
+            if (param[name].vars != undefined) {
+                for (let key of Object.keys(param[name].vars)) {
+                    param[name].vars[key] = structuredClone(param[name]._varsDefaults[key])
+                    let val = param[name].vars[key]
+                    let unit = param[name].varsUnits[key]
+                    let special = param[name].varsSpecial[key]
+
+                    let el = null
+                    switch (typeof val) {
+                        case "boolean":
+                            el = document.createElement("input")
+                            el.type = "checkbox"
+                            el.checked = val
+                            el.onchange = () => param[name].vars[key] = el.checked
+                            break
+                        case "number":
+                            let isRange = special != undefined && special.min != undefined && special.max != undefined && special.step != undefined
+                            el = document.createElement("input")
+                            if (isRange) {
+                                el.type = "range"
+                                el.min = special.min
+                                el.max = special.max
+                                el.step = special.step
+                                el.oninput = () => param[name].vars[key] = el.value
+                            } else {
+                                el.type = "number"
+                                el.value = val
+                                el.onchange = function () {
+                                    param[name].vars[key] = el.value
+                                    el.blur()
+                                }
+                                el.onkeydown = function (ev) {
+                                    if (ev.key == "Enter") el.blur()
+                                }
+                            }
+                            break
+                        default:
+                            break
+                    }
+
+                    if (el != null) {
+                        el.id = `settingsEl_${key}`
+
+                        let labelEl = document.createElement("label")
+                        labelEl.innerText = `${key}${unit != undefined ? ` (${unit})` : ``}: `
+                        labelEl.setAttribute("for", el.id)
+
+                        let brEl = document.createElement("br")
+                        settingsEl.append(labelEl, el, brEl)
+                    }
+                }
+            }
+
+            pos = 0
+            absPos = 0
+            speed = 0
+
+            loadedMotor = name
+            return true
+        }
+
+        return false
+    }
+    function updateMotors () {
+        if (typeof param == "undefined") return
+        let motor = param[loadedMotor]
+        if (motor == undefined) return
+
+        if (motor.vars != undefined) {
+            for (let key of Object.keys(motor.vars)) {
+                let el = document.getElementById(`settingsEl_${key}`)
+                let val = motor.vars[key]
+                let unit = motor.varsUnits[key]
+                let special = motor.varsSpecial[key]
+
+                switch (typeof val) {
+                    case "boolean":
+                        el.checked = val
+                        break
+                    case "number":
+                        let isRange = special != undefined && special.min != undefined && special.max != undefined && special.step != undefined
+                        if (isRange || document.activeElement != el) el.value = val
+                        break
+                    default:
+                        break
+                }
+            }
+        }
+    }
+    function setupMotors () {
+        if (typeof param != "undefined") {
+            for (let name of Object.keys(param)) {
+                if (param[name].vars != undefined) {
+                    param[name]._varsDefaults = {}
+                    for (let key of Object.keys(param[name].vars)) param[name]._varsDefaults[key] = structuredClone(param[name].vars[key])
+                }
+
+                let el = document.createElement("option")
+                el.value = el.innerText = name
+                motorEl.append(el)
+            }
+        }
+
+        motorEl.onchange = reloadBtn.onclick = () => loadMotor(motorEl.value)
+    }
+    function getSpeed (relPos, absPos, currentSpeed, deltaTime) {
+        if (typeof param == "undefined") return 0
+        let motor = param[loadedMotor]
+        if (motor == undefined) return 0
+        
+        if (motor.getSpeed == undefined) return 0
+        else return motor.getSpeed(relPos, absPos, currentSpeed, deltaTime)
+    }
+    function getTarget (relPos, absPos, currentSpeed, deltaTime) {
+        if (typeof param == "undefined") return null
+        let motor = param[loadedMotor]
+        if (motor == undefined) return null
+
+        if (motor.getTarget == undefined) return null
+        else return motor.getTarget(relPos, absPos, currentSpeed, deltaTime)
+    }
+</script>
